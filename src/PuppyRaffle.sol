@@ -50,6 +50,7 @@ contract PuppyRaffle is ERC721, Ownable {
     string private constant LEGENDARY = "legendary";
 
     // Events
+    // @audit Consider adding an event for when a winner is selected with the winner's address and the tokenId od the puppy minted.
     event RaffleEnter(address[] newPlayers);
     event RaffleRefunded(address player);
     event FeeAddressChanged(address newFeeAddress);
@@ -70,19 +71,25 @@ contract PuppyRaffle is ERC721, Ownable {
         rarityToName[COMMON_RARITY] = COMMON;
         rarityToName[RARE_RARITY] = RARE;
         rarityToName[LEGENDARY_RARITY] = LEGENDARY;
+
+        // @audit Missing the mapping for tokenIdToRarity
     }
 
     /// @notice this is how players enter the raffle
     /// @notice they have to pay the entrance fee * the number of players
     /// @notice duplicate entrants are not allowed
     /// @param newPlayers the list of players to enter the raffle
+    // q Should it also accept > msg.value?
+    // @audit performs storage write before making sure each player of the array is unique, resulting in a unnecessary gas consumption when the transaction eventually reverts  
     function enterRaffle(address[] memory newPlayers) public payable {
         require(msg.value == entranceFee * newPlayers.length, "PuppyRaffle: Must send enough to enter raffle");
+
         for (uint256 i = 0; i < newPlayers.length; i++) {
             players.push(newPlayers[i]);
         }
 
         // Check for duplicates
+        // @audit DoS
         for (uint256 i = 0; i < players.length - 1; i++) {
             for (uint256 j = i + 1; j < players.length; j++) {
                 require(players[i] != players[j], "PuppyRaffle: Duplicate player");
@@ -93,26 +100,33 @@ contract PuppyRaffle is ERC721, Ownable {
 
     /// @param playerIndex the index of the player to refund. You can find it externally by calling `getActivePlayerIndex`
     /// @dev This function will allow there to be blank spots in the array
+    // @audit No param its needed, we can just use msg.sender to find the index of the player in the array. This will make it more gas efficient.
+    // @audit Refund should update the subtraction of entranceFee from totalFees.
+    // @audit Reentrancy: external call before player update, a reentrancy attack could happen.
     function refund(uint256 playerIndex) public {
+        // @audit MEV
         address playerAddress = players[playerIndex];
         require(playerAddress == msg.sender, "PuppyRaffle: Only the player can refund");
         require(playerAddress != address(0), "PuppyRaffle: Player already refunded, or is not active");
 
+        // @audit Reentrancy
         payable(msg.sender).sendValue(entranceFee);
 
         players[playerIndex] = address(0);
         emit RaffleRefunded(playerAddress);
     }
-
+    
     /// @notice a way to get the index in the array
     /// @param player the address of a player in the raffle
     /// @return the index of the player in the array, if they are not active, it returns 0
+    // @audit wrongReturn: If the player is at index 0 it will return 0 and that player might think they are not active.
     function getActivePlayerIndex(address player) external view returns (uint256) {
         for (uint256 i = 0; i < players.length; i++) {
             if (players[i] == player) {
                 return i;
             }
         }
+        // @audit wrongReturn
         return 0;
     }
 
@@ -122,20 +136,26 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @dev we use a hash of on-chain data to generate the random numbers
     /// @dev we reset the active players array after the winner is selected
     /// @dev we send 80% of the funds to the winner, the other 20% goes to the feeAddress
+    // @audit notRandom: Using a hash of on-chain data to generate the random winner is not secure nether random.
+    // q Is this function automatically called or only the owner should call it?
     function selectWinner() external {
         require(block.timestamp >= raffleStartTime + raffleDuration, "PuppyRaffle: Raffle not over");
         require(players.length >= 4, "PuppyRaffle: Need at least 4 players");
+        // @audit notRandom
         uint256 winnerIndex =
             uint256(keccak256(abi.encodePacked(msg.sender, block.timestamp, block.difficulty))) % players.length;
         address winner = players[winnerIndex];
         uint256 totalAmountCollected = players.length * entranceFee;
         uint256 prizePool = (totalAmountCollected * 80) / 100;
         uint256 fee = (totalAmountCollected * 20) / 100;
+        // @audit overflow
+        // @audit unsafe cast from uint256 to uint64
         totalFees = totalFees + uint64(fee);
 
         uint256 tokenId = totalSupply();
 
         // We use a different RNG calculate from the winnerIndex to determine rarity
+        // @audit notRandom
         uint256 rarity = uint256(keccak256(abi.encodePacked(msg.sender, block.difficulty))) % 100;
         if (rarity <= COMMON_RARITY) {
             tokenIdToRarity[tokenId] = COMMON_RARITY;
@@ -148,12 +168,16 @@ contract PuppyRaffle is ERC721, Ownable {
         delete players;
         raffleStartTime = block.timestamp;
         previousWinner = winner;
+        // @audit the winner wouldn't get the money if their fallback revert
         (bool success,) = winner.call{value: prizePool}("");
         require(success, "PuppyRaffle: Failed to send prize pool to winner");
         _safeMint(winner, tokenId);
     }
 
     /// @notice this function will withdraw the fees to the feeAddress
+    // @audit Withdrawing fees should be always allowed even if there are active players using just the totalFees variable.
+    // @audit We should make sure that totalFees > 0 before withdrawing fees.
+    // q Should only the owner should be able to withdraw fees?
     function withdrawFees() external {
         require(address(this).balance == uint256(totalFees), "PuppyRaffle: There are currently players active!");
         uint256 feesToWithdraw = totalFees;
@@ -170,6 +194,7 @@ contract PuppyRaffle is ERC721, Ownable {
     }
 
     /// @notice this function will return true if the msg.sender is an active player
+    // @audit Using a mapping instead of a for loop will be more gas efficient.
     function _isActivePlayer() internal view returns (bool) {
         for (uint256 i = 0; i < players.length; i++) {
             if (players[i] == msg.sender) {

