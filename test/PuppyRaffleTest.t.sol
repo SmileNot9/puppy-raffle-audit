@@ -295,7 +295,7 @@ contract PuppyRaffleTest is Test {
         assertEq(actualRarity, expectedRarity, "rarity was not predictable");
     }
 
-    function test_feeOverflow() public {
+    function test_UnsafeCast() public {
         vm.warp(puppyRaffle.raffleStartTime() + puppyRaffle.raffleDuration());
 
         uint256 numPlayers = 95;
@@ -303,13 +303,16 @@ contract PuppyRaffleTest is Test {
         for (uint256 i = 0; i < numPlayers; i++) {
             players[i] = address(i + 1_000_000);
         }
+        puppyRaffle.enterRaffle{value: entranceFee * numPlayers}(players);
 
-        // Manual calculation in uin256
+        // Manual calculation in uint256
         uint256 expectedTotalAmountCollected = players.length * entranceFee;
         uint256 expectedFee = (expectedTotalAmountCollected * 20) / 100;
         uint256 expectedTotalFees = expectedFee;
+
+        assertEq(uint256(puppyRaffle.totalFees()), uint256(0), "total fees should be 0 before entering the raffle");
+        assertGt(expectedFee, type(uint64).max, "expected fee should be greater than the maximum value of uint64");
         
-        puppyRaffle.enterRaffle{value: entranceFee * numPlayers}(players);
         puppyRaffle.selectWinner();
 
         // Real result in uint64
@@ -317,7 +320,12 @@ contract PuppyRaffleTest is Test {
 
         console2.log("The expected total fees are    : ", expectedTotalFees);
         console2.log("The real total fees are        : ", uint256(realTotalFees));
-        assertLt(uint256(realTotalFees), expectedTotalFees, "Real total fees isn't minor than expected one");
+        assertLt(uint256(realTotalFees), expectedTotalFees, "real total fees isn't minor than expected one");
+    
+        // Withdraw function results in a block
+        assertTrue(address(puppyRaffle).balance != uint256(realTotalFees), "puppyRaffle balance shouldn't be equal to the real total fees");
+        vm.expectRevert("PuppyRaffle: There are currently players active!");
+        puppyRaffle.withdrawFees();
     }
 
     function test_reentrancyRefund() public playersEntered {

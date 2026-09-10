@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.7.6;
+// @audit-info using a floating pragma is not recommended
+// @audit-info old version of Solidity
+
 
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -21,6 +24,7 @@ contract PuppyRaffle is ERC721, Ownable {
     uint256 public immutable entranceFee;
 
     address[] public players;
+    // @audit-gas raffleDuration should be immutable
     uint256 public raffleDuration;
     uint256 public raffleStartTime;
     address public previousWinner;
@@ -35,22 +39,25 @@ contract PuppyRaffle is ERC721, Ownable {
     mapping(uint256 => string) public rarityToName;
 
     // Stats for the common puppy (pug)
+    // @audit-gas commonImageUri should be constant
     string private commonImageUri = "ipfs://QmSsYRx3LpDAb1GZQm7zZ1AuHZjfbPkD6J7s9r41xu1mf8";
     uint256 public constant COMMON_RARITY = 70;
     string private constant COMMON = "common";
 
     // Stats for the rare puppy (st. bernard)
+    // @audit-gas rareImageUri should be constant
     string private rareImageUri = "ipfs://QmUPjADFGEKmfohdTaNcWhp7VGk26h5jXDA7v3VtTnTLcW";
     uint256 public constant RARE_RARITY = 25;
     string private constant RARE = "rare";
 
     // Stats for the legendary puppy (shiba inu)
+    // @audit-gas legendaryImageUri should be constant
     string private legendaryImageUri = "ipfs://QmYx6GsYAKnNzZ9A6NvEKV9nf1VaDzJrqDR23Y8YSkebLU";
     uint256 public constant LEGENDARY_RARITY = 5;
     string private constant LEGENDARY = "legendary";
 
     // Events
-    // @audit Consider adding an event for when a winner is selected with the winner's address and the tokenId od the puppy minted.
+    // @audit Consider adding an event when a winner is selected with the winner's address and the tokenId of the puppy minted.
     event RaffleEnter(address[] newPlayers);
     event RaffleRefunded(address player);
     event FeeAddressChanged(address newFeeAddress);
@@ -60,6 +67,7 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @param _raffleDuration the duration in seconds of the raffle
     constructor(uint256 _entranceFee, address _feeAddress, uint256 _raffleDuration) ERC721("Puppy Raffle", "PR") {
         entranceFee = _entranceFee;
+        // @audit-info check zero address
         feeAddress = _feeAddress;
         raffleDuration = _raffleDuration;
         raffleStartTime = block.timestamp;
@@ -71,8 +79,6 @@ contract PuppyRaffle is ERC721, Ownable {
         rarityToName[COMMON_RARITY] = COMMON;
         rarityToName[RARE_RARITY] = RARE;
         rarityToName[LEGENDARY_RARITY] = LEGENDARY;
-
-        // @audit Missing the mapping for tokenIdToRarity
     }
 
     /// @notice this is how players enter the raffle
@@ -80,7 +86,7 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @notice duplicate entrants are not allowed
     /// @param newPlayers the list of players to enter the raffle
     // q Should it also accept > msg.value?
-    // @audit performs storage write before making sure each player of the array is unique, resulting in a unnecessary gas consumption when the transaction eventually reverts  
+    // @audit-mine performs storage write before making sure each player of the array is unique, resulting in a unnecessary gas consumption when the transaction eventually reverts  
     function enterRaffle(address[] memory newPlayers) public payable {
         require(msg.value == entranceFee * newPlayers.length, "PuppyRaffle: Must send enough to enter raffle");
 
@@ -100,8 +106,7 @@ contract PuppyRaffle is ERC721, Ownable {
 
     /// @param playerIndex the index of the player to refund. You can find it externally by calling `getActivePlayerIndex`
     /// @dev This function will allow there to be blank spots in the array
-    // @audit No param its needed, we can just use msg.sender to find the index of the player in the array. This will make it more gas efficient.
-    // @audit Refund should update the subtraction of entranceFee from totalFees.
+    // @audit-mine No param its needed, we can just use msg.sender to find the index of the player in the array. This will make it more gas efficient.
     // @audit Reentrancy: external call before player update, a reentrancy attack could happen.
     function refund(uint256 playerIndex) public {
         // @audit MEV
@@ -113,6 +118,7 @@ contract PuppyRaffle is ERC721, Ownable {
         payable(msg.sender).sendValue(entranceFee);
 
         players[playerIndex] = address(0);
+        // @audit-low Reentrancy event  
         emit RaffleRefunded(playerAddress);
     }
     
@@ -146,6 +152,7 @@ contract PuppyRaffle is ERC721, Ownable {
             uint256(keccak256(abi.encodePacked(msg.sender, block.timestamp, block.difficulty))) % players.length;
         address winner = players[winnerIndex];
         uint256 totalAmountCollected = players.length * entranceFee;
+        // @audit-info Magic numbers
         uint256 prizePool = (totalAmountCollected * 80) / 100;
         uint256 fee = (totalAmountCollected * 20) / 100;
         // @audit overflow
@@ -171,6 +178,7 @@ contract PuppyRaffle is ERC721, Ownable {
         // @audit the winner wouldn't get the money if their fallback revert
         (bool success,) = winner.call{value: prizePool}("");
         require(success, "PuppyRaffle: Failed to send prize pool to winner");
+        // @audit-low Reentrancy event  
         _safeMint(winner, tokenId);
     }
 
@@ -179,9 +187,11 @@ contract PuppyRaffle is ERC721, Ownable {
     // @audit We should make sure that totalFees > 0 before withdrawing fees.
     // q Should only the owner should be able to withdraw fees?
     function withdrawFees() external {
+        // @audit Mishandling ETH
         require(address(this).balance == uint256(totalFees), "PuppyRaffle: There are currently players active!");
         uint256 feesToWithdraw = totalFees;
         totalFees = 0;
+        // slither-disable-next-line arbitrary-send-eth
         (bool success,) = feeAddress.call{value: feesToWithdraw}("");
         require(success, "PuppyRaffle: Failed to withdraw fees");
     }
@@ -195,6 +205,7 @@ contract PuppyRaffle is ERC721, Ownable {
 
     /// @notice this function will return true if the msg.sender is an active player
     // @audit Using a mapping instead of a for loop will be more gas efficient.
+    // @audit This function is not used anywhere
     function _isActivePlayer() internal view returns (bool) {
         for (uint256 i = 0; i < players.length; i++) {
             if (players[i] == msg.sender) {

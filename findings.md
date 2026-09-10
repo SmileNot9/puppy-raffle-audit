@@ -383,21 +383,31 @@ function test_notRandomRarity() public playersEntered {
 No block variable (`timestamp`, `prevrandao`, `blockhash`, `difficulty`, `number`) should ever be used as a source of randomness on-chain.  
 
 
-### [S-#] Collecting total fees in `PuppyRaffle::totalFees` being it an uint64 variable might cause a silence overflow.  
+### [S-#] `PuppyRaffle::totalFees` might cause overflow and uses an unsafe cast, blocking the `PuppyRaffle::withdrawFees` function.
 
-**Description:** `PuppyRaffle::totalFees` is declared as an uint64 variable instead of an uint256. This causes a very low `players.length` to do an overflow resetting its counting corrupting the real accounting.
+**Description:** `PuppyRaffle::totalFees` is declared as a uint64 variable instead of a uint256. This causes two bugs:  
+1. Unsafe cast: `PuppyRaffle::fee` is declared as a uint256 but when calculating `PuppyRaffle::totalFees` its casted to uint64 without any safety. If: fee > type(uint64).max (~18.44 ETH) the variable wraps modulo 2⁶⁴ — the high bits are silently discarded, so totalFees ends up far below the real amount. For that to happen would be needed ≈93 players (if `PuppyRaffle::entranceFee` = 1 ETH): 93 players * 1 ETH * 20 / 100 = 18.6 ETH > type(uint64).max.
+2. Overflow: raffles whose individual fee fits in uint64 still may cause an overflow in `PuppyRaffle::totalFees` as its a uint64 declared variable. The accumulated sum in totalFees wraps modulo 2⁶⁴ as well.
 
 ```solidity
 @>  uint64 public totalFees = 0;
 
     ...
-// @audit overflow
-@>  totalFees = totalFees + uint64(fee);
+
+    function selectWinner() external {
+        ...
+
+        // @audit overflow & casting
+@>      totalFees = totalFees + uint64(fee);
 ```  
 
-**Impact:**   
+**Impact:** As a consequence of this bug, uint64 variable and the uint64 forced cast might silently wrap modulo 2⁶⁴ without any warning causing the loss of the real value of `PuppyRaffle::totalFees`. Both bugs leads to a block of `PuppyRaffle::withdrawFees` function, which uses `PuppyRaffle::totalFees` to send the fees and its `require(address(this).balance == uint256(totalFees))`, as this last require could not be passed the function stay locked forever.
 
-**Proof of Concept:** In the following test we clearly see how the real output — uint64 variable — overflows without any warning.
+**Proof of Concept:** In the following test we can see how the unsafe cast corrupts the real accounting of `PuppyRaffle::fee` reflected in `PuppyRaffle::totalFees`. Since the raffle was initialized from the start, total fees was 0 so it couldn't be the problem. `PuppyRaffle::totalFees` and its overflow bug is not tested in the PoC but also produces the same issue and its fixes are the same as the unsafe cast.
+
+<details> <summary>PoC</summary>
+
+In the following test we clearly see how the real output — uint64 variable — overflows without any warning.  
 
 In this case we get as outputs:  
 
@@ -406,14 +416,12 @@ The expected total fees are    : 19000000000000000000
 The real total fees are        : 553255926290448384
 ```
 
-uint64 variable completely resets starting its counting again.  
+The uint64 value wrapped: 19e18 was stored as 19e18 - 2⁶⁴ ≈ 0.55e18.  
 
-<details>
-<summary>PoC</summary>
-Place the following test into `PuppyRaffle.t.sol`.
+Place the following test into `PuppyRaffle.t.sol`.  
 
 ```solidity
-function test_feeOverflow() public {
+function test_UnsafeCast() public {
     vm.warp(puppyRaffle.raffleStartTime() + puppyRaffle.raffleDuration());
 
     uint256 numPlayers = 95;
@@ -421,13 +429,16 @@ function test_feeOverflow() public {
     for (uint256 i = 0; i < numPlayers; i++) {
         players[i] = address(i + 1_000_000);
     }
+    puppyRaffle.enterRaffle{value: entranceFee * numPlayers}(players);
 
-    // Manual calculation in uin256
+    // Manual calculation in uint256
     uint256 expectedTotalAmountCollected = players.length * entranceFee;
     uint256 expectedFee = (expectedTotalAmountCollected * 20) / 100;
     uint256 expectedTotalFees = expectedFee;
+
+    assertEq(uint256(puppyRaffle.totalFees()), uint256(0), "total fees should be 0 before entering the raffle");
+    assertGt(expectedFee, type(uint64).max, "expected fee should be greater than the maximum value of uint64");
         
-    puppyRaffle.enterRaffle{value: entranceFee * numPlayers}(players);
     puppyRaffle.selectWinner();
 
     // Real result in uint64
@@ -435,12 +446,57 @@ function test_feeOverflow() public {
 
     console2.log("The expected total fees are    : ", expectedTotalFees);
     console2.log("The real total fees are        : ", uint256(realTotalFees));
-    assertLt(uint256(realTotalFees), expectedTotalFees, "Real total fees isn't minor than expected one");
+    assertLt(uint256(realTotalFees), expectedTotalFees, "real total fees should be less than the expected value");
+
+    // Withdraw function results in a block
+    assertTrue(address(puppyRaffle).balance != uint256(realTotalFees), "puppyRaffle balance shouldn't be equal to the real total fees");
+    vm.expectRevert("PuppyRaffle: There are currently players active!");
+    puppyRaffle.withdrawFees();
 }
 ```  
 </details>  
 
 **Recommended Mitigation:** There are a few recommendations:  
 
-1. Consider allowing duplicates. Users can create new wallet addresses anyway, so checking for duplicates does not stop the same user from entering multiple times.
-2. Consider using a mapping with a require to check for duplicates. This eliminates the nested for loop and, as a consequence, the DoS vector.
+1. Change the `PuppyRaffle::totalFees` type variable from uint64 to uint256 and remove the forced cast. This solves the issue as the max of a uint256 variable is huge — 1.158e77 —, compared against the uint64 max — 1.845e19.  
+
+```diff
+    ...
+
+-   uint64 public totalFees = 0;
++   uint256 public totalFees = 0;
+
+    ...
+
+    function selectWinner() external {
+        ...
+
+-       totalFees = totalFees + uint64(fee);
++       totalFees = totalFees + fee;
+```  
+
+2. Consider using the library [`SafeMath`](https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v3.4.0/contracts/math/SafeMath.sol) and [`SafeCast`](https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v3.2.0/contracts/utils/SafeCast.sol) from OpenZeppelin. For compiler 0.7.6 use v3.4.0 from the contract library. 
+
+```diff
+    ...
+    import {Address} from "@openzeppelin/contracts/utils/Address.sol";
++   import {SafeMath} from "@openzeppelin/contracts/math/SafeMath.sol";
++   import {SafeCast} from "@openzeppelin/contracts/utils/SafeCast.sol";
+
+    ...
+
+    contract PuppyRaffle is ERC721, Ownable {
+        using Address for address payable;
++       using SafeMath for uint256;
++       using SafeCast for uint256;
+
+        ...
+
+-       totalFees = totalFees + uint64(fee);
++       totalFees = uint256(totalFees).add(fee).toUint64();        
+```  
+
+Consider that ".toUint64()" will fire a revert which removes the unwarned truncation but does not fix the uint64 space issue. Knowing that, mitigation 2 is better only if the uint64 is strictly wanted, if not, use mitigation 1.  
+
+
+### [S-#] `PuppyRaffle::withdrawFees` function mishandles ETH in his first require
