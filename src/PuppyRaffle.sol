@@ -3,7 +3,6 @@ pragma solidity ^0.7.6;
 // @audit-info using a floating pragma is not recommended
 // @audit-info old version of Solidity
 
-
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
@@ -85,8 +84,7 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @notice they have to pay the entrance fee * the number of players
     /// @notice duplicate entrants are not allowed
     /// @param newPlayers the list of players to enter the raffle
-    // q Should it also accept > msg.value?
-    // @audit-mine performs storage write before making sure each player of the array is unique, resulting in a unnecessary gas consumption when the transaction eventually reverts  
+    // @audit-mine performs storage write before making sure each player of the array is unique, resulting in a unnecessary gas consumption when the transaction eventually reverts
     function enterRaffle(address[] memory newPlayers) public payable {
         require(msg.value == entranceFee * newPlayers.length, "PuppyRaffle: Must send enough to enter raffle");
 
@@ -96,6 +94,7 @@ contract PuppyRaffle is ERC721, Ownable {
 
         // Check for duplicates
         // @audit DoS
+        // @audit-gas uin256 playerLength = players.length;
         for (uint256 i = 0; i < players.length - 1; i++) {
             for (uint256 j = i + 1; j < players.length; j++) {
                 require(players[i] != players[j], "PuppyRaffle: Duplicate player");
@@ -118,10 +117,10 @@ contract PuppyRaffle is ERC721, Ownable {
         payable(msg.sender).sendValue(entranceFee);
 
         players[playerIndex] = address(0);
-        // @audit-low Reentrancy event  
+        // @audit-low Reentrancy event
         emit RaffleRefunded(playerAddress);
     }
-    
+
     /// @notice a way to get the index in the array
     /// @param player the address of a player in the raffle
     /// @return the index of the player in the array, if they are not active, it returns 0
@@ -178,13 +177,11 @@ contract PuppyRaffle is ERC721, Ownable {
         // @audit the winner wouldn't get the money if their fallback revert
         (bool success,) = winner.call{value: prizePool}("");
         require(success, "PuppyRaffle: Failed to send prize pool to winner");
-        // @audit-low Reentrancy event  
+        // @audit-low Reentrancy event
         _safeMint(winner, tokenId);
     }
 
     /// @notice this function will withdraw the fees to the feeAddress
-    // @audit Withdrawing fees should be always allowed even if there are active players using just the totalFees variable.
-    // @audit We should make sure that totalFees > 0 before withdrawing fees.
     // q Should only the owner should be able to withdraw fees?
     function withdrawFees() external {
         // @audit Mishandling ETH

