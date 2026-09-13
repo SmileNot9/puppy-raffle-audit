@@ -1,9 +1,9 @@
 ### [S-#] TITLE (Root Cause + Impact)
 
-**Description:**
+**Description:** 
 
-**Impact:**
+**Impact:** 
 
-**Proof of Concept:**
+**Proof of Concept:** 
 
-**Recommended Mitigation:**
+**Recommended Mitigation:** 

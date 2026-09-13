@@ -1,3 +1,135 @@
+---
+title: PuppyRaffle Audit Report
+author: SmileNot
+date: September 13, 2026
+header-includes:
+  - \usepackage{titling}
+  - \usepackage{graphicx}
+---
+
+\begin{titlepage}
+    \centering
+    \begin{figure}[h]
+        \centering
+        \includegraphics[width=0.5\textwidth]{logo.pdf} 
+    \end{figure}
+    \vspace*{2cm}
+    {\Huge\bfseries PuppyRaffle Audit Report\par}
+    \vspace{1cm}
+    {\Large Version 1.0\par}
+    \vspace{2cm}
+    {\Large\itshape Cyfrin.io\par}
+    \vfill
+    {\large \today\par}
+\end{titlepage}
+
+/maketitle
+
+<!-- Your report starts here! -->
+
+Prepared by: [SmileNot](https://github.com/SmileNot9)
+Lead Auditors: 
+- [SmileNot](https://github.com/SmileNot9)
+
+# Table of Contents
+- [Table of Contents](#table-of-contents)
+- [Protocol Summary](#protocol-summary)
+- [Disclaimer](#disclaimer)
+- [Risk Classification](#risk-classification)
+- [Audit Scope Details](#audit-scope-details)
+  - [Compatibilities](#compatibilities)
+  - [Roles](#roles)
+- [Known issues](#known-issues)
+  - [Issues found](#issues-found)
+- [Findings](#findings)
+  - [High](#high)
+    - [\[H-1\] `PuppyRaffle::refund` performs an external call before updating the state, making it vulnerable to a reentrancy attack](#h-1-puppyrafflerefund-performs-an-external-call-before-updating-the-state-making-it-vulnerable-to-a-reentrancy-attack)
+    - [\[H-2\] Weak randomness in `PuppyRaffle::selectWinner` allows anyone to predict the winner and the minted puppy's rarity](#h-2-weak-randomness-in-puppyraffleselectwinner-allows-anyone-to-predict-the-winner-and-the-minted-puppys-rarity)
+    - [\[H-3\] `PuppyRaffle::totalFees` might cause overflow and uses an unsafe cast, blocking the `PuppyRaffle::withdrawFees` function](#h-3-puppyraffletotalfees-might-cause-overflow-and-uses-an-unsafe-cast-blocking-the-puppyrafflewithdrawfees-function)
+  - [Medium](#medium)
+    - [\[M-1\] Smart contract raffle winners without a `fallback` or `receive` function cause `PuppyRaffle::selectWinner` to revert, discarding the legitimate winner](#m-1-smart-contract-raffle-winners-without-a-fallback-or-receive-function-cause-puppyraffleselectwinner-to-revert-discarding-the-legitimate-winner)
+    - [\[M-2\] Looping through players array to check for duplicate players in `PuppyRaffle::enterRaffle` is vulnerable to a denial of service (DoS) attack](#m-2-looping-through-players-array-to-check-for-duplicate-players-in-puppyraffleenterraffle-is-vulnerable-to-a-denial-of-service-dos-attack)
+    - [\[M-3\] Strict equality on the contract balance in `PuppyRaffle::withdrawFees` allows anyone to permanently block the function by force-sending ETH](#m-3-strict-equality-on-the-contract-balance-in-puppyrafflewithdrawfees-allows-anyone-to-permanently-block-the-function-by-force-sending-eth)
+  - [Low](#low)
+    - [\[L-1\] PuppyRaffle::getActivePlayerIndex returns 0 for both the first player and non-existent players, making them indistinguishable](#l-1-puppyrafflegetactiveplayerindex-returns-0-for-both-the-first-player-and-non-existent-players-making-them-indistinguishable)
+  - [Gas](#gas)
+    - [\[G-1\] Unchanged state variables should be declared as `constant` or `immutable`](#g-1-unchanged-state-variables-should-be-declared-as-constant-or-immutable)
+    - [\[G-2\] Storage variables in a loop should be cached](#g-2-storage-variables-in-a-loop-should-be-cached)
+    - [\[G-3\] State is written to storage before the duplicate check in `PuppyRaffle::enterRaffle`, wasting gas on reverted transactions](#g-3-state-is-written-to-storage-before-the-duplicate-check-in-puppyraffleenterraffle-wasting-gas-on-reverted-transactions)
+  - [Informational](#informational)
+    - [\[I-1\] Solidity pragma should be specific, not wide](#i-1-solidity-pragma-should-be-specific-not-wide)
+    - [\[I-2\] Using an outdated Solidity version is not recommended](#i-2-using-an-outdated-solidity-version-is-not-recommended)
+    - [\[I-3\] Missing checks for `address(0)` when assigning values to address state variables](#i-3-missing-checks-for-address0-when-assigning-values-to-address-state-variables)
+    - [\[I-4\] Some events are missing `indexed` fields](#i-4-some-events-are-missing-indexed-fields)
+    - [\[I-5\] Use of "magic" numbers in `PuppyRaffle::selectWinner` is discouraged](#i-5-use-of-magic-numbers-in-puppyraffleselectwinner-is-discouraged)
+    - [\[I-6\] `PuppyRaffle::_isActivePlayer` function is never used](#i-6-puppyraffle_isactiveplayer-function-is-never-used)
+    - [\[I-7\] `PuppyRaffle::refund` emits `RaffleRefunded` after the external call, allowing events to be emitted out of order](#i-7-puppyrafflerefund-emits-rafflerefunded-after-the-external-call-allowing-events-to-be-emitted-out-of-order)
+    - [\[I-8\] `PuppyRaffle::refund` requires the caller to supply their own array index, which is error-prone and unnecessary](#i-8-puppyrafflerefund-requires-the-caller-to-supply-their-own-array-index-which-is-error-prone-and-unnecessary)
+
+# Protocol Summary
+
+This project is to enter a raffle to win a cute dog NFT. The protocol should do the following:
+
+1. Call the `enterRaffle` function with the following parameters:
+   1. `address[] participants`: A list of addresses that enter. You can use this to enter yourself multiple times, or yourself and a group of your friends.
+2. Duplicate addresses are not allowed
+3. Users are allowed to get a refund of their ticket & `value` if they call the `refund` function
+4. Every X seconds, the raffle will be able to draw a winner and be minted a random puppy
+5. The owner of the protocol will set a feeAddress to take a cut of the `value`, and the rest of the funds will be sent to the winner of the puppy.
+
+
+# Disclaimer
+
+The SmileNot team makes all effort to find as many vulnerabilities in the code in the given time period, but holds no responsibilities for the findings provided in this document. A security audit by the team is not an endorsement of the underlying business or product. The audit was time-boxed and the review of the code was solely on the security aspects of the Solidity implementation of the contracts.
+
+# Risk Classification
+
+|            |        | Impact |        |     |
+| ---------- | ------ | ------ | ------ | --- |
+|            |        | High   | Medium | Low |
+|            | High   | H      | H/M    | M   |
+| Likelihood | Medium | H/M    | M      | M/L |
+|            | Low    | M      | M/L    | L   |
+
+We use the [CodeHawks](https://docs.codehawks.com/hawks-auditors/how-to-evaluate-a-finding-severity) severity matrix to determine severity. See the documentation for more details.
+
+# Audit Scope Details 
+
+- Commit Hash: e30d199697bbc822b646d76533b66b7d529b8ef5
+- In Scope:
+
+```
+./src/
+#-- PuppyRaffle.sol
+```
+
+## Compatibilities
+
+- Solc Version: 0.7.6
+- Chain(s) to deploy contract to: Ethereum
+
+## Roles
+
+Owner - Deployer of the protocol, has the power to change the wallet address to which fees are sent through the `changeFeeAddress` function.
+Player - Participant of the raffle, has the power to enter the raffle with the `enterRaffle` function and refund value through `refund` function.
+
+# Known issues
+
+None
+
+## Issues found
+
+| Severity    | Nº of issues found |
+| ----------- | ------------------ |
+| High        | 3                  |
+| Medium      | 3                  |
+| Low         | 1                  |
+| Gas         | 3                  |
+| Informative | 8                  |
+| Total       | 18                 |
+
+# Findings
+
 ## High
 
 ### [H-1] `PuppyRaffle::refund` performs an external call before updating the state, making it vulnerable to a reentrancy attack

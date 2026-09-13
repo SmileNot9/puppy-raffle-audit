@@ -84,7 +84,7 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @notice they have to pay the entrance fee * the number of players
     /// @notice duplicate entrants are not allowed
     /// @param newPlayers the list of players to enter the raffle
-    // @audit-mine performs storage write before making sure each player of the array is unique, resulting in a unnecessary gas consumption when the transaction eventually reverts
+    // @audit-gas performs storage write before making sure each player of the array is unique, resulting in a unnecessary gas consumption when the transaction eventually reverts
     function enterRaffle(address[] memory newPlayers) public payable {
         require(msg.value == entranceFee * newPlayers.length, "PuppyRaffle: Must send enough to enter raffle");
 
@@ -94,7 +94,7 @@ contract PuppyRaffle is ERC721, Ownable {
 
         // Check for duplicates
         // @audit DoS
-        // @audit-gas uin256 playerLength = players.length;
+        // @audit-gas uint256 playerLength = players.length;
         for (uint256 i = 0; i < players.length - 1; i++) {
             for (uint256 j = i + 1; j < players.length; j++) {
                 require(players[i] != players[j], "PuppyRaffle: Duplicate player");
@@ -105,7 +105,7 @@ contract PuppyRaffle is ERC721, Ownable {
 
     /// @param playerIndex the index of the player to refund. You can find it externally by calling `getActivePlayerIndex`
     /// @dev This function will allow there to be blank spots in the array
-    // @audit-mine No param its needed, we can just use msg.sender to find the index of the player in the array. This will make it more gas efficient.
+    // @audit-info No param its needed, we can just use msg.sender to find the index of the player in the array. This will make it more gas efficient.
     // @audit Reentrancy: external call before player update, a reentrancy attack could happen.
     function refund(uint256 playerIndex) public {
         // @audit MEV
